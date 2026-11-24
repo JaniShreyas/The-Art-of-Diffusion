@@ -21,6 +21,3 @@ backbone:
   attn_resolutions: [16]
   encoder_type: 'standard'
   decoder_type: 'standard'
-
-defaults:
- - schedule: cosine

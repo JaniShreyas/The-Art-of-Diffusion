@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import math
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
 from src.models.utils.jit_utils import VisionRotaryEmbeddingFast, get_2d_sincos_pos_embed, RMSNorm
 
 def modulate(x, shift, scale):
@@ -70,7 +71,7 @@ class TimestepEmbedder(nn.Module):
         return embedding
 
     def forward(self, t):
-        t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
+        t_freq = self.timestep_embedding(t, self.frequency_embedding_size).to(self.mlp[0].weight.dtype)
         t_emb = self.mlp(t_freq)
         return t_emb
 
@@ -89,24 +90,51 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
-def scaled_dot_product_attention(query, key, value, dropout_p=0.0) -> torch.Tensor:
-    L, S = query.size(-2), key.size(-2)
-    scale_factor = 1 / math.sqrt(query.size(-1))
-    attn_bias = torch.zeros(query.size(0), 1, L, S, dtype=query.dtype).cuda()
+def scaled_dot_product_attention(
+    query, key, value, dropout_p=0.0, training=False, fused_attn=True, upcast_attn=False
+) -> torch.Tensor:
+    drop_p = dropout_p if training else 0.0
+    if upcast_attn:
+        with torch.amp.autocast(device_type=query.device.type, enabled=False):
+            if fused_attn:
+                return F.scaled_dot_product_attention(
+                    query.float(), key.float(), value.float(), dropout_p=drop_p
+                ).to(value.dtype)
+            scale_factor = 1 / math.sqrt(query.size(-1))
+            attn_weight = query.float() @ key.float().transpose(-2, -1) * scale_factor
+            attn_weight = torch.softmax(attn_weight, dim=-1)
+            attn_weight = torch.dropout(attn_weight, drop_p, train=training)
+            return (attn_weight @ value.float()).to(value.dtype)
 
-    with torch.cuda.amp.autocast(enabled=False):
-        attn_weight = query.float() @ key.float().transpose(-2, -1) * scale_factor
-    attn_weight += attn_bias
+    if fused_attn:
+        return F.scaled_dot_product_attention(
+            query.to(value.dtype), key.to(value.dtype), value, dropout_p=drop_p
+        )
+    scale_factor = 1 / math.sqrt(query.size(-1))
+    q_cast, k_cast = query.to(value.dtype), key.to(value.dtype)
+    attn_weight = q_cast @ k_cast.transpose(-2, -1) * scale_factor
     attn_weight = torch.softmax(attn_weight, dim=-1)
-    attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
+    attn_weight = torch.dropout(attn_weight, drop_p, train=training)
     return attn_weight @ value
 
 
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=True, qk_norm=True, attn_drop=0., proj_drop=0.):
+    def __init__(
+        self,
+        dim,
+        num_heads=8,
+        qkv_bias=True,
+        qk_norm=True,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        fused_attn=True,
+        upcast_attn=False,
+    ):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
+        self.fused_attn = fused_attn
+        self.upcast_attn = upcast_attn
 
         self.q_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
         self.k_norm = RMSNorm(head_dim) if qk_norm else nn.Identity()
@@ -127,7 +155,15 @@ class Attention(nn.Module):
         q = rope(q)
         k = rope(k)
 
-        x = scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.)
+        x = scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout_p=self.attn_drop.p,
+            training=self.training,
+            fused_attn=self.fused_attn,
+            upcast_attn=self.upcast_attn,
+        )
 
         x = x.transpose(1, 2).reshape(B, N, C)
 
@@ -179,11 +215,28 @@ class FinalLayer(nn.Module):
 
 
 class JiTBlock(nn.Module):
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attn_drop=0.0, proj_drop=0.0):
+    def __init__(
+        self,
+        hidden_size,
+        num_heads,
+        mlp_ratio=4.0,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        fused_attn=True,
+        upcast_attn=False,
+    ):
         super().__init__()
         self.norm1 = RMSNorm(hidden_size, eps=1e-6)
-        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True,
-                              attn_drop=attn_drop, proj_drop=proj_drop)
+        self.attn = Attention(
+            hidden_size,
+            num_heads=num_heads,
+            qkv_bias=True,
+            qk_norm=True,
+            attn_drop=attn_drop,
+            proj_drop=proj_drop,
+            fused_attn=fused_attn,
+            upcast_attn=upcast_attn,
+        )
         self.norm2 = RMSNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.mlp = SwiGLUFFN(hidden_size, mlp_hidden_dim, drop=proj_drop)
@@ -218,7 +271,10 @@ class JiT(nn.Module):
         num_classes=1000,
         bottleneck_dim=128,
         in_context_len=32,
-        in_context_start=8
+        in_context_start=8,
+        fused_attention=True,
+        upcast_attention=False,
+        checkpointing=False,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -230,6 +286,7 @@ class JiT(nn.Module):
         self.in_context_len = in_context_len
         self.in_context_start = in_context_start
         self.num_classes = num_classes
+        self.gradient_checkpointing = checkpointing
 
         # time and class embed
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -247,8 +304,21 @@ class JiT(nn.Module):
             self.in_context_posemb = nn.Parameter(torch.zeros(1, self.in_context_len, hidden_size), requires_grad=True)
             torch.nn.init.normal_(self.in_context_posemb, std=.02)
 
+        if self.in_context_len > 0 and self.in_context_start >= depth:
+            raise ValueError(
+                f"in_context_start ({self.in_context_start}) must be < depth ({depth}) "
+                f"when in_context_len ({self.in_context_len}) > 0."
+            )
+
+        head_dim = hidden_size // num_heads
+        if hidden_size % num_heads != 0 or head_dim % 4 != 0:
+            raise ValueError(
+                f"JiT 2D RoPE requires hidden_size ({hidden_size}) divisible by num_heads ({num_heads}) "
+                f"and head_dim ({head_dim}) divisible by 4."
+            )
+
         # rope
-        half_head_dim = hidden_size // num_heads // 2
+        half_head_dim = head_dim // 2
         hw_seq_len = input_size // patch_size
         self.feat_rope = VisionRotaryEmbeddingFast(
             dim=half_head_dim,
@@ -263,9 +333,15 @@ class JiT(nn.Module):
 
         # transformer
         self.blocks = nn.ModuleList([
-            JiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio,
-                     attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
-                     proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0)
+            JiTBlock(
+                hidden_size,
+                num_heads,
+                mlp_ratio=mlp_ratio,
+                attn_drop=attn_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                proj_drop=proj_drop if (depth // 4 * 3 > i >= depth // 4) else 0.0,
+                fused_attn=fused_attention,
+                upcast_attn=upcast_attention,
+            )
             for i in range(depth)
         ])
 
@@ -353,7 +429,11 @@ class JiT(nn.Module):
                 in_context_tokens = y_emb.unsqueeze(1).repeat(1, self.in_context_len, 1)
                 in_context_tokens += self.in_context_posemb
                 x = torch.cat([in_context_tokens, x], dim=1)
-            x = block(x, c, self.feat_rope if i < self.in_context_start else self.feat_rope_incontext)
+            rope = self.feat_rope if i < self.in_context_start else self.feat_rope_incontext
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                x = checkpoint.checkpoint(block, x, c, rope, use_reentrant=False)
+            else:
+                x = block(x, c, rope)
 
         x = x[:, self.in_context_len:]
 

@@ -1,0 +1,40 @@
+name: "asymflow"
+type: "diffusion"
+backbone_type: "jit"
+
+# Strict LakonLab parity config for ImageNet 256x256 (AsymFlow + JiT-B/16, ~133M params)
+# For JiT-H/16 parity (953M params): hidden_size=1280, depth=32, num_heads=16,
+# bottleneck_dim=256, in_context_start=10, proj_drop=0.2.
+asymflow:
+  patch_size: 16
+  rank: 8               # ImageNet 256x256 RGB p=16 -> D=768, optimal r=8
+  basis_type: "pca"
+  cache_dir: "data/pca_bases"
+  pca_max_images: 10000 # Matches LakonLab tools/asymflow_subspace_pca_dit.py default
+  train_t_min: 0.05     # Matches LakonLab GaussianFlow sigma_min=5e-2
+  sample_t_min: 0.04    # Matches LakonLab AsymJiT inference sigma_min=4e-2
+  t_eps: 1.0e-4         # Matches LakonLab train_cfg eps=1e-4
+  time_scale: 1.0       # Matches LakonLab num_timesteps=1
+  init_jit_bottleneck: true
+
+time_step_log_normal:
+  mean: 0.8
+  std: 0.8
+
+backbone:
+  input_size: 256
+  patch_size: 16
+  in_channels: 3
+  hidden_size: 768
+  depth: 12
+  num_heads: 12
+  mlp_ratio: 4.0
+  num_classes: 1000
+  bottleneck_dim: 128
+  in_context_len: 32
+  in_context_start: 4
+  attn_drop: 0.0
+  proj_drop: 0.0
+  fused_attention: true
+  upcast_attention: true
+  checkpointing: true

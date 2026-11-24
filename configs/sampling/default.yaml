@@ -1,3 +1,4 @@
 num_images: 16
 sample_every_n_epochs: 10
-solver_num_steps: 50
+solver_num_steps: 10
+method: "heun"

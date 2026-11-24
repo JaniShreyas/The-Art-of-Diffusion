@@ -1,0 +1,41 @@
+name: "asymflow"
+type: "diffusion"
+backbone_type: "dit"
+
+# AsymFlow parameterization (t=0 clean image, t=1 pure noise)
+asymflow:
+  patch_size: 4
+  rank: 4               # MNIST 32x32 p=4 -> D=16 (try 0, 1, 2, 4, 8, 16)
+  basis_type: "pca"     # "pca" or "random"
+  cache_dir: "data/pca_bases"
+  pca_max_images: null
+  train_t_min: 0.05
+  sample_t_min: 0.04
+  t_eps: 1.0e-4
+  time_scale: 1.0       # Matches LakonLab num_timesteps=1 (override to 1000.0 to ablate)
+  init_jit_bottleneck: false
+
+time_step_log_normal:
+  mean: 0.8
+  std: 0.8
+
+backbone:
+  input_size: 32
+  patch_size: 4
+  in_channels: 1
+  hidden_size: 128
+  depth: 4
+  num_heads: 4
+  mlp_ratio: 4.0
+  num_classes: 1
+  # LightningDiT defaults (set all four to false for Classic Peebles & Xie DiT)
+  use_rmsnorm: true
+  use_swiglu: true
+  use_qknorm: true
+  use_rope: true
+  use_pos_embed: true
+  attn_drop: 0.0
+  proj_drop: 0.0
+  fused_attention: true
+  upcast_attention: false
+  checkpointing: false

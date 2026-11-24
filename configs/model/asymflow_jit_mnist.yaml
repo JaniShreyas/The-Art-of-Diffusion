@@ -1,0 +1,33 @@
+name: "asymflow"
+type: "diffusion"
+backbone_type: "jit"
+
+# AsymFlow parameterization (t=0 clean image, t=1 pure noise)
+asymflow:
+  patch_size: 4
+  rank: 4               # MNIST 32x32 p=4 -> D=16 (try 0, 1, 2, 4, 8, 16)
+  basis_type: "pca"     # "pca" or "random"
+  cache_dir: "data/pca_bases"
+  pca_max_images: null  # null = full training set
+  train_t_min: 0.05
+  sample_t_min: 0.04
+  t_eps: 1.0e-4
+  time_scale: 1.0       # Matches LakonLab num_timesteps=1 (override to 1000.0 to ablate)
+  init_jit_bottleneck: true
+
+# Log-Normal timestep sampling on noise level t = sigmoid(z), z ~ N(mean, std^2)
+time_step_log_normal:
+  mean: 0.8
+  std: 0.8
+
+backbone:
+  input_size: 32
+  in_channels: 1
+  patch_size: 4
+  hidden_size: 32
+  depth: 4
+  num_heads: 8
+  mlp_ratio: 4.0
+  num_classes: 1
+  in_context_len: 0
+  bottleneck_dim: 32
