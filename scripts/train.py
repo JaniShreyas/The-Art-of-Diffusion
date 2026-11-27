@@ -30,6 +30,9 @@ def flatten_config(config):
 @hydra.main(config_path="../configs", config_name="config", version_base=None)
 def main(config: DictConfig):
 
+    if not os.environ.get("MLFLOW_TRACKING_URI"):
+        mlflow.set_tracking_uri("sqlite:///mlflow.db")
+
     start_epoch = 1
     checkpoint = None
     

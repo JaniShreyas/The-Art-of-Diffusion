@@ -167,7 +167,7 @@ class Trainer:
 
         # If it is final, save the ema model as mlflow model as well
         if is_final:
-            mlflow.pytorch.log_model(self.ema_model, name="model")
+            mlflow.pytorch.log_model(self.ema_model, name="model", serialization_format="pickle")
             print("Final EMA model saved in MLFlow model format")
 
         # Clean up temporary file

@@ -1,0 +1,39 @@
+name: "asymflow"
+type: "diffusion"
+backbone_type: "jit"
+
+# AsymFlow + scaled-down JiT for CIFAR-10 (32x32 RGB, patch_size=4 -> D=48, 64 tokens)
+# Local consumer GPU (~7.4M params). For Colab L4/A100 (~22M params, JiT-S/4):
+# override model.backbone.hidden_size=384 model.backbone.depth=12 model.backbone.num_heads=6.
+asymflow:
+  patch_size: 4
+  rank: 4               # 91.85% CIFAR-10 patch energy (try 0, 2, 4, 8, 48)
+  basis_type: "pca"     # "pca" or "random"
+  cache_dir: "data/pca_bases"
+  pca_max_images: null
+  train_t_min: 0.05
+  sample_t_min: 0.04
+  t_eps: 1.0e-4
+  time_scale: 1.0       # Matches LakonLab num_timesteps=1
+  init_jit_bottleneck: true
+
+time_step_log_normal:
+  mean: 0.8
+  std: 0.8
+
+backbone:
+  input_size: 32
+  in_channels: 3
+  patch_size: 4
+  hidden_size: 256
+  depth: 6
+  num_heads: 8
+  mlp_ratio: 4.0
+  num_classes: 1
+  in_context_len: 0
+  bottleneck_dim: 32
+  attn_drop: 0.0
+  proj_drop: 0.0
+  fused_attention: true
+  upcast_attention: false
+  checkpointing: false

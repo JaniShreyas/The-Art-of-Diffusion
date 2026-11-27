@@ -1,0 +1,7 @@
+epochs: 1
+lr: 2.0e-4
+ema_decay: 0.999
+validate_every_n_epochs: 999
+accumulation_steps: 1
+calculate_fid_every_n_epochs: 999
+fid_num_images: 16
